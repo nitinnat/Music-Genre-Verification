@@ -244,14 +244,20 @@ def save_verification_dataset(folder,savefilename,override = True,sample = 1000,
         return train, valid, test
 
 
-def next_verif_batch(batch_size,type = 'mel'):
+def next_verif_batch(batch_size,type = 'mel',data = 'train'):
     if type == 'mel':
         current_dir = "./data/melfeatures/"
-        verif_file_path = "train_mel_verif.csv"
+        if data == 'train':
+            verif_file_path = "train_mel_verif.csv"
+        else:
+            verif_file_path = "test_mel_verif.csv"
         prefix = "melspect"
     else:
         current_dir = "./data/audio/"
-        verif_file_path = "train_audio_verif.csv"
+        if data == "train":
+            verif_file_path = "train_audio_verif.csv"
+        else:
+            verif_file_path = "test_audio_verif.csv"
         prefix = "audio"
     verif_data_info = pd.read_csv(os.path.join(current_dir,verif_file_path))
     X1_ids = verif_data_info["X1_id"].tolist()
@@ -267,11 +273,12 @@ def next_verif_batch(batch_size,type = 'mel'):
     n_mels = cur_features_file.shape[0]
     mel_vals = cur_features_file.shape[1]
     features_dic = {} #To store arrays and not repeat load them
-    X1_batch = np.zeros((batch_size,n_mels,mel_vals))
-    X2_batch = np.zeros((batch_size,n_mels,mel_vals))
-    indicator_batch = []
+    
 
     for k in range(len(X1_ids)//batch_size):
+        X1_batch = np.zeros((batch_size,n_mels,mel_vals))
+        X2_batch = np.zeros((batch_size,n_mels,mel_vals))
+        indicator_batch = []
         for i in range(batch_size):
             if not X1_ids[i] in features_dic.keys():
                 datafilepath = prefix + '_' + str(X1_ids[i]) + '_'  + labels1[i]+'.npy'
@@ -291,8 +298,13 @@ def next_verif_batch(batch_size,type = 'mel'):
                 indicator_batch.append([1,0])
             else:
                 indicator_batch.append([0,1])
-
-        yield (np.reshape(X1_batch,(-1,n_mels,mel_vals,1)), np.reshape(X2_batch,(-1,n_mels,mel_vals,1)), np.asarray(indicator_batch))
+        X1_batch = np.reshape(X1_batch,(-1,n_mels,mel_vals,1)).astype('float32')
+        X2_batch = np.reshape(X2_batch, (-1,n_mels,mel_vals,1)).astype('float32') 
+        indicator_batch = np.asarray(indicator_batch).astype('float32')
+        #Mean normalize
+        X1_batch = (X1_batch - X1_batch.mean()) / X1_batch.std()
+        X2_batch = (X2_batch - X2_batch.mean()) / X2_batch.std()
+        yield (X1_batch,X2_batch,indicator_batch)
 
 
 def load_from_file(filepath):
@@ -312,6 +324,8 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
     labels1 = verif_data_info["Label_1"].tolist()
     labels2 = verif_data_info["Label_2"].tolist()
     num_points = len(X1_ids)
+    if sample == 'all':
+        sample = len(X1_ids)
     #Need the shape
     datafilepath = prefix + '_' + str(X1_ids[0]) + '_'  + labels1[0]+'.npy'
     datafile = os.path.join(current_dir,datafilepath)
@@ -324,15 +338,16 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
         mel_vals = cur_features_file.shape[1]
         X1_batch = np.zeros((num_points,n_mels,mel_vals))
         X2_batch = np.zeros((num_points,n_mels,mel_vals))
-        indicator_batch = []
+        
     else:
         prefix = 'audio'
         audio_len = cur_features_file.shape[0]
         X1_batch = np.zeros((num_points,audio_len,1))
         X2_batch = np.zeros((num_points,audio_len, 1))
-        indicator_batch = []
+    indicator_batch = []
 
     for i in range(len(X1_ids)):
+        
         if not X1_ids[i] in features_dic.keys():
             datafilepath = prefix + '_' + str(X1_ids[i]) + '_'  + labels1[i]+'.npy'
             datafile = os.path.join(current_dir,datafilepath)
@@ -358,7 +373,14 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
             indicator_batch.append([1,0])
         else:
             indicator_batch.append([0,1])
-    return np.reshape(X1_batch[0:sample],(-1,n_mels,mel_vals,1)).astype('float32'), np.reshape(X2_batch[0:sample], (-1,n_mels,mel_vals,1)).astype('float32'), np.asarray(indicator_batch[0:sample]).astype('float32')
+    X1_batch = np.reshape(X1_batch[0:sample],(-1,n_mels,mel_vals,1)).astype('float32')
+    X2_batch = np.reshape(X2_batch[0:sample], (-1,n_mels,mel_vals,1)).astype('float32') 
+    indicator_batch = np.asarray(indicator_batch[0:sample]).astype('float32')
+    ##Mean Normalize the data
+    X1_batch = (X1_batch - X1_batch.mean()) / X1_batch.std()
+    X2_batch = (X2_batch - X2_batch.mean()) / X2_batch.std()
+
+    return X1_batch, X2_batch, indicator_batch
 
 
 
@@ -415,10 +437,15 @@ if __name__ == "__main__":
     #mel_verif_ids_labels = save_verification_dataset(melfolder, 'mel_verif.csv',override = False,sample = 500)
     #Load the audio dataset
     #audio_verif_ids_labels = save_verification_dataset(audiofolder, 'audio_verif.csv',override = False,sample = 500)
-    batch_gen = next_verif_batch(10,type = 'mel')
-    temp = next(batch_gen) 
-    print(temp[0].shape,temp[1].shape, temp[2].shape)
-    #X1_test, X2_test, y_test = load_full_dataset("test_mel_verif.csv",type = "mel")
+    '''batch_gen = next_verif_batch(10,type = 'mel')
+    while True:
+        try:
+            temp = next(batch_gen) 
+            print(temp[0].shape,temp[1].shape, temp[2].shape)
+        except StopIteration:
+            pass
+    '''
+    X1_test, X2_test, y_test = load_full_dataset("test_mel_verif.csv",type = "mel")
     #print(X1_test.shape, X2_test.shape, y_test.shape)
     
     

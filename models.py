@@ -1,11 +1,13 @@
 import tensorflow as tf 
 from tqdm import tqdm
 from load_audio import next_verif_batch, load_full_dataset
-
+import sklearn.metrics as sm
+import numpy as np
+import matplotlib.pyplot as plt
 N_MELS = 96
 MEL_VALS = 938
-BATCH_SIZE = 10
-n_epoch = 5
+BATCH_SIZE = 40
+n_epoch = 1
 def init_weights(shape):
     return tf.Variable(tf.random_normal(shape, stddev=0.01))
 
@@ -25,9 +27,9 @@ weights = {
         'bconv5':init_biases([256]),
         'woutput':init_weights([256, 128]),
         'boutput':init_biases([128]),
-        'woutput2':init_weights([256, 128]),
-        'boutput2':init_biases([128]),
-        'wfinal':init_weights([256, 2]),
+        'woutput2':init_weights([256, 256]),
+        'boutput2':init_biases([256]),
+        'wfinal':init_weights([512, 2]),
         'bfinal':init_biases([2]),}
 
 def batch_norm(x, n_out, phase_train, scope='bn'):
@@ -84,7 +86,7 @@ def dual_cnn(X_first,X_second, weights, phase_train,keep_prob):
     
 
     mpool_2_first = tf.nn.max_pool(conv2_2_first, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
-    mpool_2_second = tf.nn.max_pool(conv2_2_first, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
+    mpool_2_second = tf.nn.max_pool(conv2_2_second, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
     
     
     dropout_2_first = tf.nn.dropout(mpool_2_first, keep_prob)
@@ -117,7 +119,7 @@ def dual_cnn(X_first,X_second, weights, phase_train,keep_prob):
     dropout_4_first = tf.nn.dropout(mpool_4_first, keep_prob)
     dropout_4_second = tf.nn.dropout(mpool_4_second, keep_prob)
 
-    """
+    
     conv2_5_first = tf.add(tf.nn.conv2d(dropout_4_first, weights['wconv5'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv5'])
     conv2_5_second = tf.add(tf.nn.conv2d(dropout_4_second, weights['wconv5'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv5'])
     print(conv2_5_first.shape)
@@ -125,19 +127,22 @@ def dual_cnn(X_first,X_second, weights, phase_train,keep_prob):
     conv2_5_first = tf.nn.relu(batch_norm(conv2_5_first, 256, phase_train))
     conv2_5_second = tf.nn.relu(batch_norm(conv2_5_second, 256, phase_train))
     
-    mpool_5_first = tf.nn.max_pool(conv2_5_first, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='VALID')
-    mpool_5_second = tf.nn.max_pool(conv2_5_second, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='VALID')
+    mpool_5_first = tf.nn.max_pool(conv2_5_first, ksize=[1, 4, 2, 1], strides=[1, 4, 2, 1], padding='VALID')
+    mpool_5_second = tf.nn.max_pool(conv2_5_second, ksize=[1, 4, 2, 1], strides=[1, 4, 2, 1], padding='VALID')
     
     dropout_5_first = tf.nn.dropout(mpool_5_first, keep_prob)
     dropout_5_second = tf.nn.dropout(mpool_5_second, keep_prob)
-    """
+    print(dropout_5_second.shape)
 
-    flat_first = tf.reshape(dropout_4_first, [-1, weights['woutput'].get_shape().as_list()[0]])
-    flat_second = tf.reshape(dropout_4_second, [-1, weights['woutput'].get_shape().as_list()[0]])
-    
+
+    #flat_first = tf.reshape(dropout_4_first, [-1, weights['woutput'].get_shape().as_list()[0]])
+    #flat_second = tf.reshape(dropout_4_second, [-1, weights['woutput'].get_shape().as_list()[0]])
+    print(conv2_5_second.shape[1]*conv2_5_second.shape[2]*conv2_5_second.shape[3])
+    flat_first = tf.reshape(dropout_5_first, [-1, dropout_5_first.shape[1]*dropout_5_first.shape[2]*dropout_5_first.shape[3]])
+    flat_second = tf.reshape(dropout_5_second, [-1, dropout_5_second.shape[1]*dropout_5_second.shape[2]*dropout_5_second.shape[3]])
 
     print(flat_first.get_shape())
-    print(flat_second.get_shape())
+    
     flat_first = tf.add(tf.matmul(flat_first, weights['woutput2']), weights['boutput2'])
     flat_second = tf.add(tf.matmul(flat_second, weights['woutput2']), weights['boutput2'])
     
@@ -167,64 +172,174 @@ def dual_cnn(X_first,X_second, weights, phase_train,keep_prob):
     
     return p_y_X
 
+def cnn(melspectrogram, weights, phase_train):
+
+    x = tf.reshape(melspectrogram,[-1,1,96,938])
+    x = batch_norm(melspectrogram, 938, phase_train)
+    x = tf.reshape(melspectrogram,[-1,96,938,1])
+    conv2_1 = tf.add(tf.nn.conv2d(x, weights['wconv1'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv1'])
+    conv2_1 = tf.nn.relu(batch_norm(conv2_1, 32, phase_train))
+    mpool_1 = tf.nn.max_pool(conv2_1, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
+    dropout_1 = tf.nn.dropout(mpool_1, 0.5)
+
+    print(conv2_1.shape)
+    conv2_2 = tf.add(tf.nn.conv2d(dropout_1, weights['wconv2'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv2'])
+    conv2_2 = tf.nn.relu(batch_norm(conv2_2, 128, phase_train))
+    mpool_2 = tf.nn.max_pool(conv2_2, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
+    dropout_2 = tf.nn.dropout(mpool_2, 0.5)
+    print(conv2_2.shape)
+
+    conv2_3 = tf.add(tf.nn.conv2d(dropout_2, weights['wconv3'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv3'])
+    conv2_3 = tf.nn.relu(batch_norm(conv2_3, 128, phase_train))
+    mpool_3 = tf.nn.max_pool(conv2_3, ksize=[1, 2, 4, 1], strides=[1, 2, 4, 1], padding='VALID')
+    dropout_3 = tf.nn.dropout(mpool_3, 0.5)
+    print(conv2_3.shape)
+
+    conv2_4 = tf.add(tf.nn.conv2d(dropout_3, weights['wconv4'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv4'])
+    conv2_4 = tf.nn.relu(batch_norm(conv2_4, 192, phase_train))
+    mpool_4 = tf.nn.max_pool(conv2_4, ksize=[1, 3, 5, 1], strides=[1, 3, 5, 1], padding='VALID')
+    dropout_4 = tf.nn.dropout(mpool_4, 0.5)
+    print(conv2_4.shape)
+
+    conv2_5 = tf.add(tf.nn.conv2d(dropout_4, weights['wconv5'], strides=[1, 1, 1, 1], padding='SAME'), weights['bconv5'])
+    conv2_5 = tf.nn.relu(batch_norm(conv2_5, 256, phase_train))
+    mpool_5 = tf.nn.max_pool(conv2_5, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='VALID')
+    dropout_5 = tf.nn.dropout(mpool_5, 0.5)
+    print(conv2_5.shape)
+
+    flat = tf.reshape(dropout_5, [-1, weights['woutput'].get_shape().as_list()[0]])
+    p_y_X = tf.nn.sigmoid(tf.add(tf.matmul(flat,weights['woutput']),weights['boutput']))
+
+    return p_y_X
+
 if __name__ == "__main__":
-	print("Initializing graph.")
-	
-	X_first = tf.placeholder("float", [None, N_MELS, MEL_VALS, 1],name="First_input_vector")
-	X_second = tf.placeholder("float", [None, N_MELS, MEL_VALS, 1],name="Second_input_vector")
 
-	y = tf.placeholder("float", [None, 2],name="Truth_labels")
-	lrate = tf.placeholder("float",name="Learning_rate")
-	keep_prob = tf.placeholder("float",name="Dropout")
-	phase_train = tf.placeholder(tf.bool, name='phase_train')
+    
+    print("Done")
+    print("Initializing graph.")
+    
+    X_first = tf.placeholder("float", [None, N_MELS, MEL_VALS, 1],name="First_input_vector")
+    X_second = tf.placeholder("float", [None, N_MELS, MEL_VALS, 1],name="Second_input_vector")
 
-	y_ = dual_cnn(X_first, X_second, weights, phase_train,keep_prob)
+    y = tf.placeholder("float", [None, 2],name="Truth_labels")
+    lrate = tf.placeholder("float",name="Learning_rate")
+    keep_prob = tf.placeholder("float",name="Dropout")
+    phase_train = tf.placeholder(tf.bool, name='phase_train')
 
-	predict_op = y_
-	print(y.shape,y_.shape)
-	# Train and Evaluate Model
-	cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = y, logits = y_))
-	train_op = tf.train.AdamOptimizer(1e-4).minimize(cost)
-	correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-	accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    y_ = dual_cnn(X_first, X_second, weights, phase_train,keep_prob)
 
-	#Load test dataset
-	X1_test, X2_test, y_test = load_full_dataset("test_mel_verif.csv",type = "mel")
+    predict_op = y_
+    print(y.shape,y_.shape)
+    # Train and Evaluate Model
+    cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels = y, logits = y_))
+    train_op = tf.train.AdamOptimizer(1e-4).minimize(cost)
+    correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    
+    #Load test dataset
+    X1_test, X2_test, y_test = load_full_dataset("test_mel_verif.csv",type = "mel")
 
-	config = tf.ConfigProto()
-	config.gpu_options.allow_growth=True
-	run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
-	print("Running session.")
-	with tf.Session(config=config) as sess:
-	    #tf.initialize_all_variables().run()
-	    tf.global_variables_initializer().run()
-	    for i in tqdm(range(n_epoch)):
-	        batch_gen = next_verif_batch(BATCH_SIZE, type = 'mel')
-	        while True:
-	            try:
-	                temp = next(batch_gen)
-	                X1_train_batch,X2_train_batch,y_train_batch = temp[0], temp[1], temp[2]
-	                print(X1_train_batch.shape,X1_train_batch.shape, y_train_batch.shape)
-	                
-	                train_input_dict = {X_first: X1_train_batch,
-	                                    X_second: X2_train_batch,
-	                                    y: y_train_batch,
-	                                    phase_train: True,
-	                                    keep_prob: 0.5}
-	                _, c = sess.run([train_op,cost], feed_dict=train_input_dict,options = run_options)
-	            except StopIteration:
-	                #If the generator expires, then break out of the loop
-	                break
-	        if i % 5 == 0:
-	            print("We are in epoch: " +str(i))
-	            print("Cost:" +  str(c))
-	            train_accuracy = accuracy.eval(feed_dict=train_input_dict)
-	            print('step %d, training accuracy %g' % (i, train_accuracy))
-	            test_input_dict = {X_first: X1_test[0:50],
-	                               X_second: X2_test[0:50],
-	                               y: y_test[0:100],
-	                               phase_train:False,
-	                               keep_prob: 1.0}
-	            predictions = sess.run(predict_op, feed_dict=test_input_dict)
-	            print('Epoch : ', i,  'AUC : ', sm.roc_auc_score(y_test, predictions, average='samples'))
-	            print('test accuracy %g' % accuracy.eval(feed_dict=test_input_dict))
+
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth=True
+    run_options = tf.RunOptions(report_tensor_allocations_upon_oom = True)
+    print("Running session.")
+
+    ##Initialize saver
+    saver = tf.train.Saver()
+
+    with tf.Session(config=config) as sess:
+        #tf.initialize_all_variables().run()
+        tf.global_variables_initializer().run()
+        costs = []
+        for i in tqdm(range(n_epoch)):
+            batch_gen_train = next_verif_batch(BATCH_SIZE, type = 'mel',data='train')
+            count = 0
+            costs_per_epoch = []
+            while True:
+                try:
+                    temp = next(batch_gen_train)
+                    X1_train_batch,X2_train_batch,y_train_batch = temp[0], temp[1], temp[2]
+                    
+                    train_input_dict = {X_first: X1_train_batch,
+                                        X_second: X2_train_batch,
+                                        y: y_train_batch,
+                                        phase_train: True,
+                                        keep_prob: 0.5}
+                    _, c = sess.run([train_op,cost], feed_dict=train_input_dict,options = run_options)
+                    costs_per_epoch.append(c)
+
+                    
+
+
+                    if count%100== 0:
+                        print("Cost after iteration %d in epoch %d is: %.5f"%(count, i, c))
+                        '''
+                        accuracies = []
+                        F1_scores = []
+                        batch_gen_test = next_verif_batch(BATCH_SIZE, type='mel',data='test')
+                        while True:
+                            try:
+                                temp = next(batch_gen_test)
+                                X1_test_batch,X2_test_batch,y_test_batch = temp[0], temp[1], temp[2]
+                                test_input_dict = {X_first: X1_test_batch,
+                                                       X_second: X2_test_batch,
+                                                       y: y_test_batch,
+                                                       phase_train:False,
+                                                       keep_prob: 1.0}
+                                predictions = sess.run(predict_op, feed_dict=test_input_dict).tolist()
+                                F1_scores.append(sm.f1_score(np.argmax(predictions,1).astype('float32'), 
+                                                                    np.argmax(predictions,1).astype('float32')))
+                                accuracies.append(accuracy.eval(feed_dict=test_input_dict))
+                                
+                            except StopIteration:
+                                print('Epoch : ', i,  'Avg F1 score : ', np.mean(F1_scores), 'Avg. Accuracy: ', np.mean(accuracies))              
+                                break
+                        '''
+
+                    count += 1
+                except StopIteration:
+                    #If the generator expires, then break out of the loop
+                    costs.append(costs_per_epoch)
+                    break
+            
+
+
+            print("We are in epoch: " +str(i))
+            print("Cost:" +  str(c))
+            train_accuracy = accuracy.eval(feed_dict=train_input_dict)
+            print('step %d, training accuracy %g' % (i, train_accuracy))
+            #Since we cannot calculate the accuracy of the whole test set at one time,
+            #I decided to evaluate on batches of test data and then aggregate the results 
+            #To calculate the overall accuracy.
+            
+            
+            #predictions_array = []
+            #truth_labels_array = []
+            accuracies = []
+            F1_scores = []
+            batch_gen_test = next_verif_batch(BATCH_SIZE, type='mel',data='test')
+            while True:
+                try:
+                    temp = next(batch_gen_test)
+                    X1_test_batch,X2_test_batch,y_test_batch = temp[0], temp[1], temp[2]
+                    test_input_dict = {X_first: X1_test_batch,
+                                           X_second: X2_test_batch,
+                                           y: y_test_batch,
+                                           phase_train:False,
+                                           keep_prob: 1.0}
+                    predictions = sess.run(predict_op, feed_dict=test_input_dict).tolist()
+                    F1_scores.append(sm.f1_score(np.argmax(predictions_array,1).astype('float32'), 
+                                                        [np.argmax(t).astype('float32') for t in truth_labels_array]))
+                    accuracies.append(accuracy.eval(feed_dict=test_input_dict))
+                    
+                except StopIteration:
+                    print('Epoch : ', i,  'Avg F1 score : ', np.mean(F1_scores), 'Avg. Accuracy: ', np.mean(accuracies))              
+                    break
+        if not os.path.exists("./data/models/"):
+                os.mkdir("./data/models/")
+        save_path = saver.save(sess, "./data/models/model.ckpt")
+        print("Model saved in path: %s" % save_path)
+        plt.figure()
+        plt.plot(range(len(costs[0])),costs[0],'r')
+        plt.plot(range(len(accuracies)), accuracies,'b')
