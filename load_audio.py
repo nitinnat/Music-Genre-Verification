@@ -17,8 +17,9 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
 from multiprocessing.pool import Pool
 from functools import partial
-
+from sklearn.utils import shuffle
 import pickle
+
 SAMPLE = 100
 Fs         = 12000
 N_FFT      = 512
@@ -50,7 +51,10 @@ def load_audio_filenames(music_dir):
     return files, track_ids
 
 
+"""
+This function stores the raw audio files within the ./data/audio/ folder 
 
+"""
 def save_raw_audio(files, track_ids, all_track_ids, all_labels, sample = SAMPLE,save =False):
     assert len(files) == len(track_ids)
     assert len(all_track_ids) == len(all_track_ids)
@@ -62,7 +66,7 @@ def save_raw_audio(files, track_ids, all_track_ids, all_labels, sample = SAMPLE,
         
         for i in tqdm(range(len(files))):
             try:
-                if not os.path.exists("./data/audio_" +str(track_ids[i])+'_' + csv_dic[int(track_ids[i])]  + ".npy"):
+                if not os.path.exists("./data/audio/audio_" +str(track_ids[i])+'_' + csv_dic[int(track_ids[i])]  + ".npy"):
                    
                     signal, sr = lb.load(files[i], sr=Fs)
                     n_sample = signal.shape[0]
@@ -72,7 +76,7 @@ def save_raw_audio(files, track_ids, all_track_ids, all_labels, sample = SAMPLE,
                     elif n_sample > n_sample_fit:
                         signal = signal[(n_sample-n_sample_fit)//2:(n_sample+n_sample_fit)//2]
                     signal = np.reshape(signal,(-1))
-                    savefilename = "./data/audio_" +str(track_ids[i])+'_' + csv_dic[int(track_ids[i])]  + ".npy"
+                    savefilename = "./data/audio/audio_" +str(track_ids[i])+'_' + csv_dic[int(track_ids[i])]  + ".npy"
                     #print("Saving to %s"%savefilename)
                     np.save(open(savefilename,"wb"),signal)
             except:
@@ -80,31 +84,6 @@ def save_raw_audio(files, track_ids, all_track_ids, all_labels, sample = SAMPLE,
                 print("ID %d not found." %int(track_ids[i]))    
 
 
-"""
-#NOT NEEDED for current analysis.
-#Load audio files, aggregate them over 100 sample intervals. Find mean, max and min for the features.
-"""
-def process_audio(files,track_ids,window = 100,sample = SAMPLE):
-    clip_range = int(19800*SAMPLE/window)  ##To clip the feature vectors for equal length.
-    train_data = []
-    num_files = len(files[0:sample])
-    for i in tqdm(range(num_files)):
-        audio_vec = []
-        audio, _ = librosa.load(files[i])
-        audio = np.reshape(audio,(-1))
-        for j in range(1,int(audio.shape[0]/window)):
-            mean_val = np.mean(audio[j*window: min((j+1)*window,audio.shape[0])])
-            max_val = np.max(audio[j*window: min((j+1)*window,audio.shape[0])])
-            min_val = np.min(audio[j*window: min((j+1)*window,audio.shape[0])])
-            #Append to audio vector for this audio file.
-            audio_vec += [mean_val,max_val,min_val]
-        audio_vec = np.array(audio_vec[:clip_range])
-        train_data.append(np.array(audio_vec))
-    train_data = np.array(train_data)
-    print("Original audio shape: " + str(audio.shape))
-    print("Condensed audio shape: " + str(train_data.shape))
-    train_ids = track_ids[0:num_files]
-    return train_data, train_ids
 
 """
 function load_ids_labels():
@@ -151,35 +130,17 @@ def draw_sample(datafolder,sample):
     assert len(audio_vec) == len(track_ids) == len(labels) == sample
     return audio_vec, track_ids, labels
 
-def form_verification_dataset(data,labels,sample):
-    ##Insert assert statements here for the correct input data sizes
-    assert len(data) == len(labels)
-    #Select samples
-    idx = np.arange(0 , len(data))
-    np.random.shuffle(idx)
-    idx = idx[:sample]
-    data_shuffle = [data[i] for i in idx]
-    labels_shuffle = [labels[i] for i in idx]
-    
-    #Pair each sample with every other sample from the dataset. O(sample^2)
-    num_mels,mel_vals = data.shape[1], data.shape[2]
-    X1 = X2 = np.zeros((sample*(sample-1)//2,num_mels,mel_vals))
-    indicators = []
-    count = 0
-    for i in range(0,len(data_shuffle)):
-        for j in range(i+1,len(data_shuffle)):
-            X1[count,:,:] = data_shuffle[i]
-            X1[count,:,:] = data_shuffle[j]
-            if np.equal(labels_shuffle[i], labels_shuffle[j]).all():
-                indicators.append(0)
-            else:
-                indicators.append(1)
-            count += 1
-            
-    one_hot = OneHotEncoder().fit_transform(np.array(indicators).reshape(-1,1)).todense()
-    print("Indicators: " + str(indicators[0]) + " One Hot" + str(one_hot[0]))
-    return X1, X2, one_hot.reshape(-1,2)
-def save_verification_dataset(folder,savefilename,override = True,sample = 1000,num_test = 1000):
+
+"""
+Saves the train and test partitions as IDs in a CSV file.
+While loading within the batch function, this csv file is loaded
+and then actual npy files will be loaded on the fly using the ID information.
+This is to save memory, as this task is extremely memory intensive.
+
+The datapoints are paired up and stored in the verification format.
+
+"""
+def save_verification_dataset(folder,savefilename,override = True,sample = 1000,num_test = 10000):
     #folder should be where your data is located directly.
     if override:
 
@@ -223,28 +184,38 @@ def save_verification_dataset(folder,savefilename,override = True,sample = 1000,
                 count += 1
         assert len(X1) == len(X2) == len(indicators)
         
-        ##Save it as a csv file with 2 IDs and an indicator
+        ##Save it as a csv file with 2 IDs, an indicator and the respective labels
         df = pd.DataFrame(data = {'X1_id': X1, 
             'X2_id': X2, 'Indicator':indicators, 
             'Label_1': labels1, 'Label_2': labels2})
-        train, test = train_test_split(df, test_size=num_test/len(df), random_state = 42)
-        train, valid = train_test_split(train, test_size=num_test/len(train), random_state = 42)
+        train, test = train_test_split(df, test_size=num_test/len(df), random_state = 42, stratify = df["Indicator"])
+        #train, valid = train_test_split(train, test_size=num_test/len(train), random_state = 42, stratify = train["Indicator"])
         
         train.to_csv(os.path.join(folder, 'train_' + savefilename),index = False)
-        valid.to_csv(os.path.join(folder, 'valid_' + savefilename),index = False)
+        #valid.to_csv(os.path.join(folder, 'valid_' + savefilename),index = False)
         test.to_csv(os.path.join(folder, 'test_' + savefilename),index = False)
 
         print("CSV files stored in %s as %s and %s."%(folder,'train_' + savefilename,'test_' + savefilename))
-        return train, valid, test
+        return train, test
 
     else:
         train = pd.read_csv(os.path.join(folder, 'train_' + savefilename)) 
-        valid = pd.read_csv(os.path.join(folder, 'valid_' + savefilename)) 
+        #valid = pd.read_csv(os.path.join(folder, 'valid_' + savefilename)) 
         test =  pd.read_csv(os.path.join(folder, 'test_' + savefilename))
-        return train, valid, test
+        return train, test
 
 
-def next_verif_batch(batch_size,type = 'mel',data = 'train'):
+"""
+This function is the most used outside this file.
+Accepts a batch size, type of dataset, and looks through the CSV files with ID information
+construct a generator that can repeatedly called to release batches of data.
+
+SAMPLE parameter can be set in order to balance the data. Since there isn't a lot of 
+similar-genre samples, this can be used to return batches from an equally balanced
+shuffled dataset.
+"""
+
+def next_verif_batch(batch_size,type = 'mel',data = 'train', SAMPLE = 10000):
     if type == 'mel':
         current_dir = "./data/melfeatures/"
         if data == 'train':
@@ -259,12 +230,24 @@ def next_verif_batch(batch_size,type = 'mel',data = 'train'):
         else:
             verif_file_path = "test_audio_verif.csv"
         prefix = "audio"
+
+    #Load the data and balance the classes
     verif_data_info = pd.read_csv(os.path.join(current_dir,verif_file_path))
+    verif_0 = verif_data_info.loc[verif_data_info['Indicator'] == 0]
+    verif_1 = verif_data_info.loc[verif_data_info['Indicator'] == 1]
+    verif_same = verif_0.sample(SAMPLE)
+    verif_diff = verif_1.sample(SAMPLE)
+    
+    verif_data_info =  pd.concat([verif_same, verif_diff], axis=0, join='inner')
+    
+    #Shuffle the dataframe
+    verif_data_info = shuffle(verif_data_info)
     X1_ids = verif_data_info["X1_id"].tolist()
     X2_ids = verif_data_info["X2_id"].tolist()
     indicators = verif_data_info["Indicator"].astype(int).tolist()
     labels1 = verif_data_info["Label_1"].tolist()
     labels2 = verif_data_info["Label_2"].tolist()
+
 
     #Need the shape
     datafilepath = prefix + '_' + str(X1_ids[0]) + '_'  + labels1[0]+'.npy'
@@ -274,30 +257,43 @@ def next_verif_batch(batch_size,type = 'mel',data = 'train'):
     mel_vals = cur_features_file.shape[1]
     features_dic = {} #To store arrays and not repeat load them
     
-
+    start = 0
+    end = batch_size
     for k in range(len(X1_ids)//batch_size):
-        X1_batch = np.zeros((batch_size,n_mels,mel_vals))
-        X2_batch = np.zeros((batch_size,n_mels,mel_vals))
+        
+        start = k*batch_size
+        end = min(start + batch_size, len(X1_ids))
+        X1_cur_ids = X1_ids[start:end]
+        X2_cur_ids = X2_ids[start:end]
+        indicators_cur = indicators[start:end]
+        X1_batch = np.zeros((len(X1_cur_ids),n_mels,mel_vals))
+        X2_batch = np.zeros((len(X1_cur_ids),n_mels,mel_vals))
         indicator_batch = []
-        for i in range(batch_size):
+        cnt = 0
+        for i in range(start,end):
             if not X1_ids[i] in features_dic.keys():
                 datafilepath = prefix + '_' + str(X1_ids[i]) + '_'  + labels1[i]+'.npy'
                 datafile = os.path.join(current_dir,datafilepath)
                 cur_features_file = load_from_file(datafile)
+                #Min max normalization
+                cur_features_file = (cur_features_file - np.amin(cur_features_file))/(np.amax(cur_features_file) - np.amin(cur_features_file))
                 features_dic[X1_ids[i]] = cur_features_file
             
-            X1_batch[i,:,:] = features_dic[X1_ids[i]]
+            X1_batch[cnt,:,:] = features_dic[X1_ids[i]]
 
             if not X2_ids[i] in features_dic.keys():
                 datafilepath = prefix + '_' + str(X2_ids[i]) + '_'  + labels2[i]+'.npy'
                 datafile = os.path.join(current_dir,datafilepath)
                 cur_features_file = load_from_file(datafile)
+                #Min max normalization
+                cur_features_file = (cur_features_file - np.amin(cur_features_file))/(np.amax(cur_features_file) - np.amin(cur_features_file))
                 features_dic[X2_ids[i]] = cur_features_file
-            X2_batch[i,:,:] = features_dic[X2_ids[i]]
+            X2_batch[cnt,:,:] = features_dic[X2_ids[i]]
             if indicators[i] == 0:
                 indicator_batch.append([1,0])
             else:
                 indicator_batch.append([0,1])
+            cnt += 1
         X1_batch = np.reshape(X1_batch,(-1,n_mels,mel_vals,1)).astype('float32')
         X2_batch = np.reshape(X2_batch, (-1,n_mels,mel_vals,1)).astype('float32') 
         indicator_batch = np.asarray(indicator_batch).astype('float32')
@@ -307,9 +303,21 @@ def next_verif_batch(batch_size,type = 'mel',data = 'train'):
         yield (X1_batch,X2_batch,indicator_batch)
 
 
+"""
+Loads a npy file
+"""
 def load_from_file(filepath):
     return np.load(open(filepath,'rb'))
 
+"""
+
+Loads the entire dataset at once.
+sample can take an int value for sample size
+enter sample = 'all' for the full dataset
+type = 'mel' to use melspectrogram feature extractor
+type = 'audio' is not yet implemented
+
+"""
 def load_full_dataset(filepath, type = 'mel',sample = 100):
     if type == 'mel':
         current_dir = "./data/melfeatures/"
@@ -318,6 +326,8 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
         current_dir = "./data/audio/"
         prefix = "audio"
     verif_data_info = pd.read_csv(os.path.join(current_dir,filepath))
+    #Shuffle the dataframe
+    verif_data_info = shuffle(verif_data_info)
     X1_ids = verif_data_info["X1_id"].tolist()
     X2_ids = verif_data_info["X2_id"].tolist()
     indicators = verif_data_info["Indicator"].astype(int).tolist()
@@ -326,6 +336,7 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
     num_points = len(X1_ids)
     if sample == 'all':
         sample = len(X1_ids)
+
     #Need the shape
     datafilepath = prefix + '_' + str(X1_ids[0]) + '_'  + labels1[0]+'.npy'
     datafile = os.path.join(current_dir,datafilepath)
@@ -352,6 +363,9 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
             datafilepath = prefix + '_' + str(X1_ids[i]) + '_'  + labels1[i]+'.npy'
             datafile = os.path.join(current_dir,datafilepath)
             cur_features_file = load_from_file(datafile)
+
+            #Min max normalization
+            cur_features_file = (cur_features_file - np.amin(cur_features_file))/(np.amax(cur_features_file) - np.amin(cur_features_file))
             features_dic[X1_ids[i]] = cur_features_file
         
         if type == 'mel':
@@ -363,7 +377,8 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
             datafile = os.path.join(current_dir,datafilepath)
             
             cur_features_file = load_from_file(datafile)
-            
+            #Min max normalization
+            cur_features_file = (cur_features_file - np.amin(cur_features_file))/(np.amax(cur_features_file) - np.amin(cur_features_file))
             features_dic[X2_ids[i]] = cur_features_file
         if type == 'mel':
             X2_batch[i,:,:] = features_dic[X2_ids[i]]
@@ -376,14 +391,13 @@ def load_full_dataset(filepath, type = 'mel',sample = 100):
     X1_batch = np.reshape(X1_batch[0:sample],(-1,n_mels,mel_vals,1)).astype('float32')
     X2_batch = np.reshape(X2_batch[0:sample], (-1,n_mels,mel_vals,1)).astype('float32') 
     indicator_batch = np.asarray(indicator_batch[0:sample]).astype('float32')
-    ##Mean Normalize the data
-    X1_batch = (X1_batch - X1_batch.mean()) / X1_batch.std()
-    X2_batch = (X2_batch - X2_batch.mean()) / X2_batch.std()
 
     return X1_batch, X2_batch, indicator_batch
 
 
-
+"""
+Finds the logscale melspectrogram features for a particular audio file
+"""
 def log_scale_melspectrogram(path, plot=False):
     
     signal = np.load(open(path, 'rb'))
@@ -405,9 +419,10 @@ def log_scale_melspectrogram(path, plot=False):
     return melspect
 
 
-# In[2]:
-
-
+"""
+Extracts melspectrogram features and stores these in npy arrays with the 
+names of these arrays being in the format melspect_<id>_<label>
+"""
 def save_mel_features(datafolder, load = False):
     filenames = list(os.walk(datafolder))[0][2]
 
@@ -427,25 +442,15 @@ def save_mel_features(datafolder, load = False):
 if __name__ == "__main__":
     melfolder = './data/melfeatures/'
     audiofolder = './data/audio/'
-    all_track_ids, all_labels = load_ids_labels("./tracks_small.csv")  ##Tested
-    #audio_files , audio_track_ids = load_audio_filenames("./music_samples/")  #Tested
+    all_track_ids, all_labels = load_ids_labels("./tracks_small.csv")  
+    #audio_files , audio_track_ids = load_audio_filenames("./music_samples/")  
     #save_raw_audio(audio_files, audio_track_ids,all_track_ids, all_labels,  sample = 3, save = True)
     #save_mel_features(datafolder)
     #Get the verification IDs
 
     #Load the melspectrum labels
-    #mel_verif_ids_labels = save_verification_dataset(melfolder, 'mel_verif.csv',override = False,sample = 500)
+    #save_verification_dataset(melfolder, 'mel_verif.csv',override = True,sample = 1000)
     #Load the audio dataset
     #audio_verif_ids_labels = save_verification_dataset(audiofolder, 'audio_verif.csv',override = False,sample = 500)
-    '''batch_gen = next_verif_batch(10,type = 'mel')
-    while True:
-        try:
-            temp = next(batch_gen) 
-            print(temp[0].shape,temp[1].shape, temp[2].shape)
-        except StopIteration:
-            pass
-    '''
-    X1_test, X2_test, y_test = load_full_dataset("test_mel_verif.csv",type = "mel")
-    #print(X1_test.shape, X2_test.shape, y_test.shape)
     
     
