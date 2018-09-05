@@ -11,7 +11,7 @@ architecture to predict similarity of genre between two audio samples (processed
 
 * Run ``` python load_audio.py ``` to extract and save the melspectrogram and the audio features (we don't use this directly in our code.)
 
-* Run the training and testing on the dataset by running:
+* Run the training and testing on the dataset:
 ```
 python models.py
 ```
